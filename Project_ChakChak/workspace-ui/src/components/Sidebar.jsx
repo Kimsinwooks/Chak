@@ -9,7 +9,7 @@ export default function Sidebar({ channels, activeChannelId, onSelectChannel, on
   return (
     <div className={clsx(
       "bg-white flex flex-col h-full flex-shrink-0 border-r border-gray-100 shadow-[1px_0_5px_0_rgba(0,0,0,0.02)] z-20 transition-all duration-300 ease-in-out relative",
-      isOpen ? "w-64" : "w-[72px]" // 💡 상태에 따른 너비 변경
+      isOpen ? "w-64" : "w-[72px]" //상태에 따른 너비 변경
     )}>
       
       {/*  접기/펼치기 토글 버튼 */}
