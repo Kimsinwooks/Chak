@@ -1,154 +1,259 @@
-import React, { useState } from 'react';
-import Sidebar from './components/Sidebar';
-import ChatArea from './components/ChatArea';
-import AIPanel from './components/AIPanel';
-import { Sparkles } from 'lucide-react';
-import { mockChannels, mockMessages } from './data/mockData';
-import { chatWithAI } from './services/aiService';
-import NotionStyleEditor from './components/NotionStyleEditor'; 
-import MeetingRoomPrep from './components/MeetingRoomPrep';
-import MeetingLiveView from './components/MeetingLiveView'; 
-import CalendarView from './components/CalendarView'; 
+import React, { useState } from 'react'
+import Sidebar from './components/Sidebar'
+import ChatArea from './components/ChatArea'
+import AIPanel from './components/AIPanel'
+import { Sparkles } from 'lucide-react'
+import { mockChannels, mockMessages } from './data/mockData'
+import { chatWithAI } from './services/aiService'
+import NotionStyleEditor from './components/NotionStyleEditor'
+import MeetingRoomPrep from './components/MeetingRoomPrep'
+import MeetingLiveView from './components/MeetingLiveView'
+import STTWorkspace from './components/STTWorkspace'
+import CalendarView from './components/CalendarView'
+import Mindmap from './components/Mindmap'
 
 export default function App() {
-  const userList = ['User','신우', '종범', '혜은', '민수', '지희', '영수'];
-  const [currentUser, setCurrentUser] = useState(userList[0]);
+  const userList = ['User', '신우', '종범', '혜은', '민수', '지희', '영수']
 
-  // 화면 전환용 스위치 상태
-  const [activeView, setActiveView] = useState('channel'); 
-  const [activeNoteId, setActiveNoteId] = useState(null); 
+  const [currentUser, setCurrentUser] = useState(userList[0])
+  const [activeView, setActiveView] = useState('channel')
+  const [activeNoteId, setActiveNoteId] = useState(null)
+  const [activeChannelId, setActiveChannelId] = useState(mockChannels[0]?.id || '1')
+  const [messages, setMessages] = useState(mockMessages)
 
-  const [activeChannelId, setActiveChannelId] = useState(mockChannels[0].id);
-  const [messages, setMessages] = useState(mockMessages);
-  const [isInsightOpen, setIsInsightOpen] = useState(false); 
-  const [aiResult, setAiResult] = useState(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isInsightOpen, setIsInsightOpen] = useState(false)
+  const [aiResult, setAiResult] = useState(null)
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
 
-  // AI 채팅 전용 상태
+  const [activeMeetingPlan, setActiveMeetingPlan] = useState(null)
+  const [useWebSearch, setUseWebSearch] = useState(false)
+
   const [aiChatMessages, setAiChatMessages] = useState([
-    { id: 'init', sender: '✨ AI 어시스턴트', text: '안녕하세요! 회의 내용 요약이나 궁금한 점을 물어보세요.', timestamp: new Date().toISOString(), isAi: true }
-  ]);
-  const [isAiTyping, setIsAiTyping] = useState(false);
+    {
+      id: 'init',
+      sender: '✨ AI 어시스턴트',
+      text: '안녕하세요! 회의 내용 요약이나 궁금한 점을 물어보세요.',
+      timestamp: new Date().toISOString(),
+      isAi: true,
+    },
+  ])
+  const [isAiTyping, setIsAiTyping] = useState(false)
 
-  // 현재 선택된 채널 정보를 찾음
-  const activeChannel = mockChannels.find(c => c.id === activeChannelId);
-  const currentMessages = messages.filter(m => m.channelId === activeChannelId);
+  const activeChannel = mockChannels.find((c) => c.id === activeChannelId) || mockChannels[0]
+  const currentMessages = messages.filter((m) => m.channelId === activeChannelId)
 
-  // 사이드바 클릭 핸들러
   const handleSelectChannel = (channelId) => {
-    setActiveView('channel');
-    setActiveChannelId(channelId);
-  };
+    setActiveView('channel')
+    setActiveChannelId(channelId)
+  }
 
   const handleSelectNote = (noteId) => {
-    setActiveView('note');
-    setActiveNoteId(noteId);
-  };
+    setActiveView('note')
+    setActiveNoteId(noteId)
+  }
 
-  const [activeMeetingPlan, setActiveMeetingPlan] = useState(null);
+  const handleSelectCalendar = () => {
+    setActiveView('calendar')
+  }
+
+  const handleSelectMindmap = () => {
+    setActiveView('mindmap')
+  }
 
   const handleSelectMeetingPrep = () => {
-    setActiveView('meeting_prep');
-  };
+    setActiveView('meeting_prep')
+  }
 
-  const handleStartMeeting = (planData) => {
-    setActiveMeetingPlan(planData);
-    setActiveView('meeting_live');
-  };
+  const handleSelectMeetingArchive = () => {
+    setActiveView('meeting_archive')
+  }
 
-  const handleSendMessage = (text) => { 
+  const handleStartMeeting = (planDataWithSession) => {
+    setActiveMeetingPlan(planDataWithSession)
+    setActiveView('meeting_live')
+  }
+
+  const handleSendMessage = (text) => {
     const newMessage = {
       id: Date.now(),
       sender: currentUser,
-      text: text,
+      text,
       channelId: activeChannelId,
       timestamp: new Date().toISOString(),
-      avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser)}&background=random`
-    };
-    setMessages(prev => [...prev, newMessage]);
-  };
+      avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser)}&background=random`,
+    }
+    setMessages((prev) => [...prev, newMessage])
+  }
 
   const handleAiChat = async (text) => {
-    const userMsg = { id: Date.now().toString(), sender: currentUser, text: text, timestamp: new Date().toISOString(), isAi: false };
-    setAiChatMessages(prev => [...prev, userMsg]);
-    setIsAiTyping(true);
+    const userMsg = {
+      id: Date.now().toString(),
+      sender: currentUser,
+      text,
+      timestamp: new Date().toISOString(),
+      isAi: false,
+    }
+
+    setAiChatMessages((prev) => [...prev, userMsg])
+    setIsAiTyping(true)
 
     try {
-      const responseText = await chatWithAI(text);
-      const aiMsg = { id: (Date.now() + 1).toString(), sender: '✨ AI 어시스턴트', text: responseText, timestamp: new Date().toISOString(), isAi: true };
-      setAiChatMessages(prev => [...prev, aiMsg]);
+      const responseText = await chatWithAI(
+        text,
+        '',
+        'general',
+        {
+          purpose: 'global_ai_panel_chat',
+          useWeb: useWebSearch,
+        }
+      )
+
+      const aiMsg = {
+        id: (Date.now() + 1).toString(),
+        sender: '✨ AI 어시스턴트',
+        text: responseText,
+        timestamp: new Date().toISOString(),
+        isAi: true,
+      }
+      setAiChatMessages((prev) => [...prev, aiMsg])
     } catch (error) {
-      alert("AI 서버 연결 실패");
+      const aiMsg = {
+        id: (Date.now() + 1).toString(),
+        sender: '✨ AI 어시스턴트',
+        text: `AI 응답 오류: ${error.message}`,
+        timestamp: new Date().toISOString(),
+        isAi: true,
+      }
+      setAiChatMessages((prev) => [...prev, aiMsg])
     } finally {
-      setIsAiTyping(false);
+      setIsAiTyping(false)
     }
-  };
+  }
+
+  const renderMainView = () => {
+    if (activeView === 'channel') {
+      return (
+        <ChatArea
+          currentUser={currentUser}
+          setCurrentUser={setCurrentUser}
+          userList={userList}
+          activeChannel={activeChannel}
+          messages={currentMessages}
+          onSendMessage={handleSendMessage}
+          onToggleInsight={() => setIsInsightOpen(!isInsightOpen)}
+          isInsightOpen={isInsightOpen}
+          setIsInsightOpen={setIsInsightOpen}
+          aiResult={aiResult}
+          setAiResult={setAiResult}
+          isAnalyzing={isAnalyzing}
+          setIsAnalyzing={setIsAnalyzing}
+        />
+      )
+    }
+
+    if (activeView === 'note') {
+      return (
+        <div className="flex-1 overflow-y-auto w-full flex justify-center bg-white">
+          <div className="w-full max-w-4xl py-10 px-8">
+            <NotionStyleEditor noteId={activeNoteId} />
+          </div>
+        </div>
+      )
+    }
+
+    if (activeView === 'calendar') {
+      return <CalendarView />
+    }
+
+    if (activeView === 'mindmap') {
+      return (
+        <div className="flex-1 overflow-hidden bg-white">
+          <div className="h-16 border-b border-gray-200 flex items-center px-8">
+            <h2 className="text-xl font-bold text-gray-900">마인드맵</h2>
+          </div>
+          <div className="h-[calc(100vh-4rem)]">
+            <Mindmap />
+          </div>
+        </div>
+      )
+    }
+
+    if (activeView === 'meeting_prep') {
+      return <MeetingRoomPrep onStartMeeting={handleStartMeeting} />
+    }
+
+    if (activeView === 'meeting_live') {
+      return (
+        <MeetingLiveView
+          planData={activeMeetingPlan}
+          useWebSearch={useWebSearch}
+          setUseWebSearch={setUseWebSearch}
+        />
+      )
+    }
+
+    if (activeView === 'meeting_archive') {
+      return <STTWorkspace />
+    }
+
+    return (
+      <ChatArea
+        currentUser={currentUser}
+        setCurrentUser={setCurrentUser}
+        userList={userList}
+        activeChannel={activeChannel}
+        messages={currentMessages}
+        onSendMessage={handleSendMessage}
+        onToggleInsight={() => setIsInsightOpen(!isInsightOpen)}
+        isInsightOpen={isInsightOpen}
+        setIsInsightOpen={setIsInsightOpen}
+        aiResult={aiResult}
+        setAiResult={setAiResult}
+        isAnalyzing={isAnalyzing}
+        setIsAnalyzing={setIsAnalyzing}
+      />
+    )
+  }
 
   return (
     <div className="flex h-screen bg-white overflow-hidden font-sans relative">
-      <Sidebar 
-        channels={mockChannels} 
+      <Sidebar
+        channels={mockChannels}
         activeChannelId={activeChannelId}
-        onSelectChannel={handleSelectChannel} 
+        activeView={activeView}
+        onSelectChannel={handleSelectChannel}
         onSelectNote={handleSelectNote}
+        onSelectCalendar={handleSelectCalendar}
+        onSelectMindmap={handleSelectMindmap}
         onSelectMeetingPrep={handleSelectMeetingPrep}
-        onSelectCalendar={() => setActiveView('calendar')}   //캘린더
+        onSelectMeetingArchive={handleSelectMeetingArchive}
       />
 
       <div className="flex-1 flex overflow-hidden relative bg-white">
-        {/* activeView 상태에 따라 화면 갈아끼우기 */}
-        {activeView === 'channel' ? (
-
-          <ChatArea
-            currentUser={currentUser} 
-            setCurrentUser={setCurrentUser} 
-            userList={userList}
-            activeChannel={activeChannel}
-            messages={currentMessages}
-            onSendMessage={handleSendMessage}
-            onToggleInsight={() => setIsInsightOpen(!isInsightOpen)}
-            isInsightOpen={isInsightOpen}
-            setIsInsightOpen={setIsInsightOpen}
-            aiResult={aiResult}
-            setAiResult={setAiResult}
-            isAnalyzing={isAnalyzing}
-            setIsAnalyzing={setIsAnalyzing}
-          />
-        ) : activeView === 'meeting_prep' ? (
-          <MeetingRoomPrep onStartMeeting={handleStartMeeting} />
-        ) : activeView === 'meeting_live' ? (
-          <MeetingLiveView planData={activeMeetingPlan} />
-        ) : activeView =="calendar"?(       //캘린더
-          <CalendarView />
-        ) : (
-          <div className="flex-1 overflow-y-auto w-full flex justify-center bg-white">
-            <div className="w-full max-w-4xl py-10 px-8">
-               <NotionStyleEditor noteId={activeNoteId} />
-            </div>
-          </div>
-        )}
+        {renderMainView()}
       </div>
 
-      <AIPanel 
+      <AIPanel
         isOpen={isInsightOpen}
         onClose={() => setIsInsightOpen(false)}
-        //aiResult={aiResult}
-        //isAnalyzing={isAnalyzing}
+        aiResult={aiResult}
+        isAnalyzing={isAnalyzing}
         chatMessages={aiChatMessages}
         onSendMessage={handleAiChat}
         isTyping={isAiTyping}
         userName={currentUser}
+        useWebSearch={useWebSearch}
+        setUseWebSearch={setUseWebSearch}
       />
 
-      {/* AI 패널 버튼  */}
-     {!isInsightOpen && (
-        <button 
+      {!isInsightOpen && (
+        <button
           onClick={() => setIsInsightOpen(true)}
-          className="fixed bottom-6 left-[280px] p-4 bg-indigo-600 text-white rounded-full shadow-2xl hover:scale-110 transition-transform z-40"
+          className="fixed bottom-6 right-6 p-4 bg-indigo-600 text-white rounded-full shadow-2xl hover:scale-110 transition-transform z-40"
         >
           <Sparkles className="h-6 w-6" />
         </button>
       )}
     </div>
-  );
+  )
 }

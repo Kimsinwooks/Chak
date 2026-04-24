@@ -1,283 +1,638 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Mic, Users, Activity, Bot, Sparkles, Pause, Square, Send, FileAudio } from 'lucide-react';
-import { chatWithAI, summarizeMeeting } from '../services/aiService';
-import STTWorkspace from './STTWorkspace';
-import AIInsightPanel from './AIInsightPanel';
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  AlertCircle,
+  Bot,
+  CheckCircle2,
+  FileText,
+  Mic,
+  Pause,
+  Square,
+  Sparkles,
+  Volume2,
+  Globe,
+} from 'lucide-react'
+import {
+  getMeetingDetail,
+  getMeetingLibraryTree,
+  getMeetingFeedback,
+  getMeetingMidSummary,
+  stopRealtimeMeeting,
+  uploadRealtimeChunk,
+} from '../services/realtimeMeetingService'
+import { chatWithAI } from '../services/aiService'
 
-
-import AgendaSidebar from './AgendaSidebar'; 
-
-export default function MeetingLiveView({ planData }) {
-  // 업로드된 데이터가 없을 경우 표시할 기본값
-  const data = planData || {
-    title: "새로운 즉석 회의", 
-    time: "진행 중", 
-    keywords: "자유주제" 
-  };
-  
-  // 아젠다가 없을 경우 기본 메시지
-  const agendas = data.agendas || ["회의 안건을 기반으로 논의를 시작하세요."];
-
-  // 대화 내역 상태
-  const [messages, setMessages] = useState([
-    { sender: 'ai', text: '회의가 시작되었습니다. 우측의 STT 기능을 통해 음성을 올리고 아이디어를 물어보세요!' }
-  ]);
-  const [inputValue, setInputValue] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const messagesEndRef = useRef(null);
-  
-  // STT 패널 열기/닫기 (공간 확보용)
-  const [isSttOpen, setIsSttOpen] = useState(true);
-
-  // 실시간 AI 요약 패널 상태
-  const [aiResult, setAiResult] = useState(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-
-  // 스크롤을 항상 최하단으로 내리는 함수
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages, isLoading]);
-
-  // 메시지 전송 로직
-  const handleSendMessage = async (text) => {
-    const trimmedText = text.trim();
-    if (!trimmedText || isLoading) return;
-    
-    setMessages((prev) => [...prev, { sender: 'user', text: trimmedText }]);
-    setInputValue('');
-    setIsLoading(true);
-
-    try {
-      const response = await chatWithAI(trimmedText);
-      setMessages((prev) => [...prev, { sender: 'ai', text: response }]);
-    } catch (error) {
-      console.error(error);
-      setMessages((prev) => [
-        ...prev, 
-        { sender: 'ai', text: '네트워크 연결이 지연되고 있거나 AI 서버 오류가 발생했습니다. 다시 시도해주세요.' }
-      ]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      handleSendMessage(inputValue);
-    }
-  };
-
-  // 요약 데이터 불러오기
-  const handleFetchInsight = async () => {
-    setIsAnalyzing(true);
-    try {
-      const sessionId = data.sessionId || 1;
-      const result = await summarizeMeeting(sessionId);
-      setAiResult(result);
-    } catch (error) {
-      console.error('요약 가져오기 실패:', error);
-      alert('AI 요약 데이터를 가져오는 중 오류가 발생했습니다.');
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
+function MeetingTypeLabel({ meetingType }) {
+  const labels = {
+    brainstorming: '브레인스토밍',
+    status_update: '진행상황 공유',
+    decision_making: '의사결정',
+    research_discussion: '연구/아이디어 검토',
+    retrospective: '회고/피드백',
+  }
 
   return (
-    <div className="w-full h-full flex bg-[#131521] overflow-hidden font-sans">
-      
-      <AgendaSidebar data={data} agendas={agendas} />
+    <span className="inline-flex px-3 py-1 rounded-full bg-violet-100 text-violet-700 text-xs font-medium">
+      {labels[meetingType] || '일반 회의'}
+    </span>
+  )
+}
 
-      {/* 2. Main Center */}
-      <div className="flex-1 flex flex-col relative p-6 min-h-0">
-        
-        {/* Top Header info */}
-        <div className="flex justify-end items-center mb-3 px-2 shrink-0">
-          <button 
-            onClick={() => setIsSttOpen(!isSttOpen)}
-            className="mr-3 px-3 py-1.5 rounded-full border border-white/20 text-white/80 text-xs hover:bg-white/10 transition-colors flex items-center gap-2"
-          >
-            <FileAudio className="w-3 h-3" />
-            {isSttOpen ? 'STT 패널 접기' : 'STT 패널 열기'}
-          </button>
-          <div className="flex items-center bg-white/10 backdrop-blur-md px-4 py-2 rounded-full border border-white/5 shadow-lg">
-            <Users className="w-4 h-4 text-white/70 mr-2" />
-            <span className="text-white/90 font-medium text-[13px]">참여자 4명</span>
+function formatSeconds(seconds = 0) {
+  const safe = Math.max(0, Math.floor(seconds))
+  const mm = String(Math.floor(safe / 60)).padStart(2, '0')
+  const ss = String(safe % 60).padStart(2, '0')
+  return `${mm}:${ss}`
+}
+
+function humanMicError(err) {
+  const name = err?.name || ''
+  if (name === 'NotAllowedError') return '브라우저 또는 운영체제에서 마이크 접근이 거부되었습니다.'
+  if (name === 'NotFoundError') return '사용 가능한 마이크 장치를 찾지 못했습니다.'
+  if (name === 'NotReadableError') return '다른 앱이 마이크를 사용 중이거나 장치를 열 수 없습니다.'
+  if (name === 'SecurityError') return 'HTTPS/보안 컨텍스트 문제로 마이크 접근이 차단되었습니다.'
+  return err?.message || '마이크 접근 또는 회의 시작에 실패했습니다.'
+}
+
+async function ensureMicrophoneReady() {
+  if (!window.isSecureContext) {
+    throw new Error('HTTPS 또는 localhost 환경이 아니어서 마이크를 사용할 수 없습니다.')
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error('이 브라우저는 마이크 입력을 지원하지 않습니다.')
+  }
+
+  const devices = await navigator.mediaDevices.enumerateDevices()
+  const audioInputs = devices.filter((d) => d.kind === 'audioinput')
+  if (audioInputs.length === 0) {
+    throw new Error('인식된 마이크가 없습니다.')
+  }
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      channelCount: 1,
+    },
+  })
+
+  return stream
+}
+
+export default function MeetingLiveView({ planData }) {
+  const [messages, setMessages] = useState([
+    {
+      sender: 'ai',
+      text: '회의가 시작되었습니다. 중간 요약과 피드백은 회의 종류·계획서·누적 기록을 함께 참고합니다.',
+    },
+  ])
+  const [inputValue, setInputValue] = useState('')
+  const [isChatLoading, setIsChatLoading] = useState(false)
+  const [useWebSearch, setUseWebSearch] = useState(false)
+
+  const [meetingDetail, setMeetingDetail] = useState(null)
+  const [meetingTree, setMeetingTree] = useState(null)
+
+  const [isRecording, setIsRecording] = useState(false)
+  const [recorderError, setRecorderError] = useState('')
+  const [isProcessingAction, setIsProcessingAction] = useState(false)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const [liveNotice, setLiveNotice] = useState('')
+
+  const mediaRecorderRef = useRef(null)
+  const mediaStreamRef = useRef(null)
+  const timerRef = useRef(null)
+  const pollRef = useRef(null)
+  const startedAtRef = useRef(Date.now())
+  const chunkOffsetRef = useRef(0)
+  const messagesEndRef = useRef(null)
+
+  const sessionId = planData?.sessionId
+  const realtimeEnabled = !!planData?.realtimeRecordingEnabled
+
+  const liveTranscriptItems = useMemo(
+    () => meetingDetail?.liveTranscriptItems || [],
+    [meetingDetail]
+  )
+
+  const afterMeetingItems = useMemo(
+    () => meetingTree?.afterMeetingRecordings || [],
+    [meetingTree]
+  )
+
+  const meetingPlanItems = useMemo(
+    () => meetingTree?.meetingPlanItems || [],
+    [meetingTree]
+  )
+
+  const knowledgeItems = useMemo(
+    () => meetingTree?.knowledgeItems || [],
+    [meetingTree]
+  )
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }
+
+  useEffect(() => {
+    scrollToBottom()
+  }, [messages])
+
+  const refreshMeetingState = async () => {
+    if (!sessionId) return
+    try {
+      const [detail, tree] = await Promise.all([
+        getMeetingDetail(sessionId),
+        getMeetingLibraryTree(sessionId),
+      ])
+      setMeetingDetail(detail)
+      setMeetingTree(tree)
+    } catch (error) {
+      console.error(error)
+    }
+  }
+
+  useEffect(() => {
+    refreshMeetingState()
+  }, [sessionId])
+
+  useEffect(() => {
+    if (!realtimeEnabled || !sessionId) return
+
+    const startAutomatically = async () => {
+      try {
+        const stream = await ensureMicrophoneReady()
+        mediaStreamRef.current = stream
+
+        const mimeType =
+          MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+            ? 'audio/webm;codecs=opus'
+            : 'audio/webm'
+
+        const recorder = new MediaRecorder(stream, { mimeType })
+        mediaRecorderRef.current = recorder
+        startedAtRef.current = Date.now()
+        chunkOffsetRef.current = 0
+
+        recorder.ondataavailable = async (event) => {
+          if (!event.data || event.data.size === 0) return
+          try {
+            await uploadRealtimeChunk(sessionId, event.data, chunkOffsetRef.current)
+            chunkOffsetRef.current += 5
+            await refreshMeetingState()
+          } catch (error) {
+            console.error(error)
+            setRecorderError(error.message || '실시간 chunk 업로드 중 오류가 발생했습니다.')
+          }
+        }
+
+        recorder.start(5000)
+        setIsRecording(true)
+        setLiveNotice('실시간 녹음이 시작되었습니다.')
+
+        timerRef.current = setInterval(() => {
+          setElapsedSeconds(Math.floor((Date.now() - startedAtRef.current) / 1000))
+        }, 1000)
+
+        pollRef.current = setInterval(() => {
+          refreshMeetingState()
+        }, 10000)
+      } catch (error) {
+        console.error(error)
+        setRecorderError(humanMicError(error))
+      }
+    }
+
+    startAutomatically()
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+      if (pollRef.current) clearInterval(pollRef.current)
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop()
+      }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop())
+      }
+    }
+  }, [realtimeEnabled, sessionId])
+
+  const handleStopMeeting = async () => {
+    if (!sessionId) return
+    try {
+      setIsProcessingAction(true)
+
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop()
+      }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop())
+      }
+      if (timerRef.current) clearInterval(timerRef.current)
+      if (pollRef.current) clearInterval(pollRef.current)
+
+      setIsRecording(false)
+      await stopRealtimeMeeting(sessionId)
+      await refreshMeetingState()
+      setLiveNotice('회의가 종료되어 회의 후 기록 폴더로 정리되었습니다.')
+    } catch (error) {
+      console.error(error)
+      setRecorderError(error.message || '회의 종료 처리 중 오류가 발생했습니다.')
+    } finally {
+      setIsProcessingAction(false)
+    }
+  }
+
+  const handleAskAI = async (text) => {
+    if (!text.trim()) return
+
+    setMessages((prev) => [...prev, { sender: 'user', text }])
+    setInputValue('')
+    setIsChatLoading(true)
+
+    try {
+      const historyText = liveTranscriptItems
+        .map((item) => item.previewLine)
+        .join('\n')
+
+      const response = await chatWithAI(
+        text,
+        historyText,
+        'realtime',
+        {
+          sessionId,
+          meetingType: data.meetingType,
+          meetingTitle: data.title,
+          meetingTime: data.time,
+          keywords: data.keywords,
+          purpose: 'live_meeting_chat',
+          useWeb: useWebSearch,
+        }
+      )
+
+      setMessages((prev) => [...prev, { sender: 'ai', text: response }])
+    } catch (error) {
+      console.error(error)
+      setMessages((prev) => [
+        ...prev,
+        { sender: 'ai', text: `AI 응답 오류: ${error.message}` },
+      ])
+    } finally {
+      setIsChatLoading(false)
+    }
+  }
+
+  const handleMidSummary = async () => {
+    if (!sessionId) return
+    try {
+      setIsProcessingAction(true)
+      const result = await getMeetingMidSummary(sessionId)
+      setMessages((prev) => [
+        ...prev,
+        {
+          sender: 'ai',
+          text: `중간 요약\n\n${result.summary}`,
+        },
+      ])
+      await refreshMeetingState()
+    } catch (error) {
+      console.error(error)
+      setRecorderError(error.message || '중간 요약 생성 중 오류가 발생했습니다.')
+    } finally {
+      setIsProcessingAction(false)
+    }
+  }
+
+  const handleFeedback = async () => {
+    if (!sessionId) return
+    try {
+      setIsProcessingAction(true)
+      const result = await getMeetingFeedback(sessionId)
+      setMessages((prev) => [
+        ...prev,
+        {
+          sender: 'ai',
+          text: `회의 피드백\n\n${result.feedback}`,
+        },
+      ])
+      await refreshMeetingState()
+    } catch (error) {
+      console.error(error)
+      setRecorderError(error.message || '회의 피드백 생성 중 오류가 발생했습니다.')
+    } finally {
+      setIsProcessingAction(false)
+    }
+  }
+
+  const handleQuickPrompt = (text) => {
+    handleAskAI(text)
+  }
+
+  const data = planData || {
+    title: '새로운 즉석 회의',
+    time: '진행 중',
+    keywords: '자유주제',
+    meetingType: 'brainstorming',
+  }
+
+  const agendas = [
+    '실시간 회의 기록 및 정리 흐름 확인',
+    '중간 요약과 피드백 기능 점검',
+    '회의 후 자료 정리 방식 확인',
+  ]
+
+  return (
+    <div className="flex-1 overflow-hidden bg-[#f7f8fa]">
+      <div className="h-full grid grid-cols-[300px_minmax(0,1fr)_360px] gap-6 p-6">
+        <aside className="bg-[#16171d] text-white rounded-3xl px-6 py-6 overflow-y-auto">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 text-xs font-medium mb-4">
+            <Mic className="w-4 h-4" />
+            실시간 분석 중
           </div>
-        </div>
 
-        {/* STT Workspace Area */}
-        {isSttOpen && (
-          <div className="bg-white rounded-3xl shadow-2xl mb-4 flex flex-col overflow-hidden border border-white/20 h-[45vh] shrink-0 transition-all duration-300">
-            <div className="bg-slate-50 border-b border-gray-100 py-3 px-6 flex items-center justify-between shrink-0">
-               <h3 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Mic className="w-4 h-4 text-blue-600"/> 음성 기록 및 변환 (STT)</h3>
-            </div>
-            <STTWorkspace />
+          <h1 className="text-2xl font-bold leading-tight">{data.title}</h1>
+          <div className="mt-3 text-sm text-white/70">{data.time}</div>
+          <div className="mt-3">
+            <MeetingTypeLabel meetingType={data.meetingType} />
           </div>
-        )}
 
-        {/* The Main Container */}
-        <div className="flex-1 bg-white rounded-[2rem] shadow-2xl flex flex-col md:flex-row overflow-hidden border border-white/20 min-h-0">
-          
-          {/* Left: Chatting area */}
-          <div className="flex-1 flex flex-col border-r border-gray-100 bg-white min-w-[300px]">
-            <div className="flex items-center px-8 py-5 border-b border-gray-50 bg-white z-10 shadow-sm">
-              <Bot className="w-5 h-5 text-blue-600 mr-2" />
-              <h2 className="text-[15px] font-extrabold text-gray-800 tracking-tight">AI 실시간 어시스턴트</h2>
+          <div className="mt-6 rounded-2xl bg-white/5 p-4">
+            <div className="text-sm font-semibold">실시간 상태</div>
+            <div className="mt-3 space-y-2 text-sm text-white/80">
+              <div>녹음: {realtimeEnabled ? (isRecording ? '진행 중' : '준비/오류') : '사용 안 함'}</div>
+              <div>경과 시간: {formatSeconds(elapsedSeconds)}</div>
+              <div>세션 ID: {sessionId || '-'}</div>
             </div>
-            
-            {/* Messages */}
-            <div className="flex-1 p-8 overflow-y-auto space-y-6 bg-slate-50/30">
-              {messages.map((msg, idx) => (
-                msg.sender === 'user' ? (
-                  <div key={idx} className="flex justify-end transform transition-all duration-300">
-                    <div className="bg-[#48c78e] text-white px-5 py-3.5 rounded-3xl rounded-tr-sm max-w-[80%] shadow-[0_4px_14px_0_rgba(72,199,142,0.39)] font-medium text-[14px]">
-                      {msg.text}
-                    </div>
-                  </div>
-                ) : (
-                  <div key={idx} className="flex justify-start items-start gap-4 transform transition-all duration-300">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-rose-400 to-rose-600 flex items-center justify-center text-white shrink-0 shadow-lg shadow-rose-500/30">
-                      <Bot className="w-5 h-5" />
-                    </div>
-                    <div className="bg-[#2c2b3e] text-white px-6 py-5 rounded-3xl rounded-tl-sm max-w-[85%] shadow-md font-medium text-[14px] leading-relaxed whitespace-pre-wrap">
-                      {msg.text}
-                    </div>
-                  </div>
-                )
-              ))}
+          </div>
 
-              {isLoading && (
-                <div className="flex justify-start items-start gap-4">
-                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-rose-400 to-rose-600 flex items-center justify-center text-white shrink-0 shadow-lg shadow-rose-500/30">
-                    <Bot className="w-5 h-5 animate-pulse" />
-                  </div>
-                  <div className="bg-[#2c2b3e] h-12 w-[80px] rounded-3xl rounded-tl-sm shadow-md flex items-center justify-center gap-1.5 opacity-80">
-                    <span className="w-2 h-2 bg-white rounded-full animate-bounce"></span>
-                    <span className="w-2 h-2 bg-white rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                    <span className="w-2 h-2 bg-white rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
-                  </div>
+          <div className="mt-6">
+            <h2 className="text-sm font-semibold mb-3">진행 안건</h2>
+            <div className="space-y-3">
+              {agendas.map((agenda, idx) => (
+                <div key={idx} className="flex items-start gap-3 rounded-2xl bg-white/5 p-4">
+                  <CheckCircle2 className="w-5 h-5 mt-0.5 text-violet-300" />
+                  <span className="text-sm text-white/85">{agenda}</span>
                 </div>
-              )}
-              <div ref={messagesEndRef} className="h-4" />
-            </div>
-            
-            {/* Input Box */}
-            <div className="p-6 bg-white border-t border-gray-50">
-              <div className="relative group">
-                <input 
-                  type="text" 
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder={isLoading ? "AI가 답변을 작성하고 있습니다..." : "AI 어시스턴트에게 질문해보세요"} 
-                  disabled={isLoading}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-full py-4 pl-6 pr-14 text-[14px] focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all font-medium placeholder-gray-400 disabled:opacity-60 disabled:bg-gray-100"
-                />
-                <button 
-                  onClick={() => handleSendMessage(inputValue)}
-                  disabled={isLoading || !inputValue.trim()}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 bg-[#3a394c] group-hover:bg-blue-600 rounded-full flex items-center justify-center text-white transition-colors duration-300 shadow-md disabled:bg-gray-300 disabled:cursor-not-allowed">
-                  <Send className="w-4 h-4 ml-0.5" />
-                </button>
-              </div>
-              <p className="text-center text-[11px] text-gray-400 mt-3 font-semibold">AI 어시스턴트는 실수를 할 수 있습니다</p>
+              ))}
             </div>
           </div>
+        </aside>
 
-          {/* Right: Side Panels */}
-          <div className="w-full md:w-[420px] bg-[#f8f9fc] p-6 flex flex-col gap-5 shrink-0 border-l border-gray-100">
-            
-            <div className="flex justify-end -mb-1">
-              <button 
-                onClick={handleFetchInsight}
-                className="text-[16px] text-indigo-500 hover:text-indigo-700 font-bold transition-colors underline underline-offset-2 flex items-center gap-1"
-                disabled={isAnalyzing}
+        <main className="bg-white rounded-3xl border border-gray-200 shadow-sm flex flex-col min-w-0">
+          <div className="border-b border-gray-100 px-6 py-5 flex items-center justify-between gap-4">
+            <div>
+              <div className="text-lg font-semibold">실시간 회의 보조</div>
+              <div className="text-sm text-gray-500">
+                회의 종류, 계획서, 업로드 자료, 실시간 STT를 함께 참고해서 응답합니다.
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {realtimeEnabled && isRecording && (
+                <span className="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-red-50 text-red-600 text-sm font-medium">
+                  <Volume2 className="w-4 h-4" />
+                  녹음 중
+                </span>
+              )}
+              <button
+                onClick={handleStopMeeting}
+                disabled={!realtimeEnabled || isProcessingAction}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl bg-gray-900 text-white text-sm font-medium disabled:opacity-50"
               >
-                <Activity className="w-3 h-3" />
-                현재까지 진행 내용 요약하기
+                <Square className="w-4 h-4" />
+                회의 종료
               </button>
             </div>
+          </div>
 
-            <div className="flex-1 min-h-0 overflow-hidden relative flex flex-col">
-              {isAnalyzing ? (
-                <div className="flex-1 flex flex-col items-center justify-center p-6 bg-gradient-to-br from-[#eef2ff] to-[#f8fafc] rounded-3xl border border-indigo-100 shadow-inner">
-                  <div className="relative mb-6">
-                    <div className="absolute inset-0 bg-indigo-400 rounded-full blur-xl animate-pulse opacity-40"></div>
-                    <div className="w-16 h-16 bg-indigo-500 rounded-full flex items-center justify-center relative z-10 shadow-lg shadow-indigo-200 animate-bounce">
-                      <Bot className="w-8 h-8 text-white" />
-                    </div>
-                  </div>
-                  <h3 className="text-[15px] font-extrabold text-indigo-900 mb-3">착착이가 회의를 분석하고 있어요!</h3>
-                  <div className="flex items-center gap-1.5 mb-4">
-                    <span className="w-2 h-2 bg-indigo-400 rounded-full animate-pulse"></span>
-                    <span className="w-2 h-2 bg-indigo-400 rounded-full animate-pulse" style={{ animationDelay: '150ms' }}></span>
-                    <span className="w-2 h-2 bg-indigo-400 rounded-full animate-pulse" style={{ animationDelay: '300ms' }}></span>
-                  </div>
-                  <p className="text-[12px] text-indigo-500/80 font-medium text-center leading-relaxed">
-                    현재까지 진행된 회의 내용을<br/>정리하는 중입니다... 잠시만 기다려주세요.
-                  </p>
+          {(recorderError || liveNotice) && (
+            <div className="px-6 pt-4">
+              {recorderError && (
+                <div className="rounded-2xl bg-red-50 text-red-600 px-4 py-3 text-sm flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 mt-0.5" />
+                  <span>{recorderError}</span>
                 </div>
-              ) : aiResult ? (
-                <AIInsightPanel aiResult={aiResult} isAnalyzing={isAnalyzing} />
-              ) : (
-                <div className="flex-1 flex flex-col items-center justify-center p-6 bg-white rounded-3xl border-2 border-dashed border-gray-200 hover:border-indigo-300 transition-colors group cursor-default">
-                  <div className="w-16 h-16 bg-[#f3f5fa] group-hover:bg-indigo-50 rounded-2xl rotate-3 group-hover:-rotate-3 transition-all duration-300 flex items-center justify-center mb-5 shadow-sm">
-                    <Sparkles className="w-8 h-8 text-[#86a0d4] group-hover:text-indigo-500 transition-colors" />
-                  </div>
-                  <h3 className="text-[15px] font-bold text-gray-700 mb-2">착착이에게 요약을 요청해보세요!</h3>
-                  <p className="text-[12px] text-gray-400 text-center leading-relaxed font-medium">
-                    우측 상단의 <span className="text-indigo-500 font-bold bg-indigo-50 px-1.5 py-0.5 rounded">현재까지 진행 내용 요약하기</span>를 누르면<br/>
-                    복잡한 회의 내용을 한눈에 정리해 드려요 ✨
-                  </p>
+              )}
+              {!recorderError && liveNotice && (
+                <div className="rounded-2xl bg-violet-50 text-violet-700 px-4 py-3 text-sm">
+                  {liveNotice}
                 </div>
               )}
             </div>
+          )}
 
-            <div className="bg-white rounded-[2rem] border border-gray-100 shadow-sm p-6 flex flex-col shrink-0">
-              <h3 className="text-[#414d6c] font-extrabold text-[15px] mb-4 flex items-center gap-2">
-                <Bot className="w-4 h-4 text-blue-500" /> 착착이에게 즉시 요청하기
-              </h3>
-              <div className="space-y-2.5 flex-1 flex flex-col justify-center">
-                <button 
-                  onClick={() => handleSendMessage("현재까지 진행 내용 요약이 필요해요")}
-                  disabled={isLoading}
-                  className="w-full text-left px-5 py-3 rounded-2xl border border-gray-100 bg-gray-50 text-gray-700 font-bold text-[13px] hover:border-blue-200 hover:bg-blue-50/50 hover:text-blue-700 transition-all shadow-sm disabled:opacity-50">
-                  📋 현재까지 진행 내용 요약이 필요해요
-                </button>
-                <button 
-                  onClick={() => handleSendMessage("회의가 정체됐어. 어떻게 해결하면 좋을지 제안해줘")}
-                  disabled={isLoading}
-                  className="w-full text-left px-5 py-3 rounded-2xl border border-gray-100 bg-gray-50 text-gray-700 font-bold text-[13px] hover:border-blue-200 hover:bg-blue-50/50 hover:text-blue-700 transition-all shadow-sm disabled:opacity-50">
-                  💡 회의가 정체됐어요. 제안해 주세요.
-                </button>
-                <button 
-                  onClick={() => handleSendMessage("현재 상황에서 다음 단계(Next Step) 추천이 필요해")}
-                  disabled={isLoading}
-                  className="w-full text-left px-5 py-3 rounded-2xl border border-gray-100 bg-gray-50 text-gray-700 font-bold text-[13px] hover:border-blue-200 hover:bg-blue-50/50 hover:text-blue-700 transition-all shadow-sm disabled:opacity-50">
-                  🚀 다음 스텝(Next Step) 추천이 필요해요
-                </button>
-              </div>
-            </div>
+          <div className="px-6 pt-5 flex flex-wrap gap-3">
+            <button
+              onClick={handleMidSummary}
+              disabled={isProcessingAction}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl bg-violet-600 text-white text-sm font-medium disabled:opacity-50"
+            >
+              <Sparkles className="w-4 h-4" />
+              회의 중간 요약
+            </button>
+            <button
+              onClick={handleFeedback}
+              disabled={isProcessingAction}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl border border-gray-200 bg-white text-sm font-medium disabled:opacity-50"
+            >
+              <Bot className="w-4 h-4" />
+              회의 피드백
+            </button>
+            <button
+              onClick={() => handleQuickPrompt('지금 회의가 어디서 막히고 있는지 진단해줘.')}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl border border-gray-200 bg-white text-sm font-medium"
+            >
+              <Pause className="w-4 h-4" />
+              정체 진단
+            </button>
           </div>
 
-        </div>
+          <div className="px-6 pt-3">
+            <button
+              onClick={() => setUseWebSearch((prev) => !prev)}
+              className={`inline-flex items-center gap-2 px-4 py-2 rounded-2xl text-sm font-medium border transition ${
+                useWebSearch
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : 'bg-white text-gray-700 border-gray-300'
+              }`}
+            >
+              <Globe className="w-4 h-4" />
+              웹검색 {useWebSearch ? 'ON' : 'OFF'}
+            </button>
+          </div>
 
-        {/* Bottom Buttons */}
-        <div className="flex justify-end gap-3 mt-6 pb-2 mr-2">
-          <button className="flex items-center gap-2 px-6 py-3.5 bg-[#404b6b] hover:bg-[#4b587d] text-white font-bold text-[14px] rounded-xl transition-colors shadow-lg">
-             <Pause className="w-4 h-4" fill="currentColor" /> 회의 일시멈춤
-          </button>
-          <button className="flex items-center gap-2 px-6 py-3.5 bg-[#2d7df6] hover:bg-[#2068db] text-white font-bold text-[14px] rounded-xl shadow-[0_0_15px_rgba(45,125,246,0.4)] transition-all transform hover:-translate-y-0.5">
-             <Square className="w-4 h-4 ml-0.5" fill="currentColor" /> 회의 종료
-          </button>
-        </div>
-      
+          <div className="px-6 pt-4 flex flex-wrap gap-2">
+            <button
+              onClick={() => handleQuickPrompt('현재까지 결정된 내용과 남은 쟁점을 정리해줘.')}
+              className="px-3 py-2 rounded-full bg-gray-100 text-sm text-gray-700"
+            >
+              결정/쟁점 정리
+            </button>
+            <button
+              onClick={() => handleQuickPrompt('다음에 누가 무엇을 말하면 회의가 잘 풀릴지 제안해줘.')}
+              className="px-3 py-2 rounded-full bg-gray-100 text-sm text-gray-700"
+            >
+              다음 스텝 제안
+            </button>
+            <button
+              onClick={() => handleQuickPrompt('회의 목표에서 벗어난 부분이 있으면 알려줘.')}
+              className="px-3 py-2 rounded-full bg-gray-100 text-sm text-gray-700"
+            >
+              목표 이탈 점검
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-6 py-6 space-y-4">
+            {messages.map((message, idx) => {
+              const isAI = message.sender === 'ai'
+              return (
+                <div key={idx} className={`flex ${isAI ? 'justify-start' : 'justify-end'}`}>
+                  <div
+                    className={`max-w-[80%] rounded-3xl px-5 py-4 text-sm leading-7 shadow-sm whitespace-pre-wrap ${
+                      isAI
+                        ? 'bg-gray-50 border border-gray-200 text-gray-800'
+                        : 'bg-violet-600 text-white'
+                    }`}
+                  >
+                    {message.text}
+                  </div>
+                </div>
+              )
+            })}
+
+            {isChatLoading && (
+              <div className="inline-flex rounded-3xl px-5 py-4 bg-gray-50 border border-gray-200 text-sm text-gray-500">
+                AI가 답변을 생성하는 중입니다...
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+
+          <div className="border-t border-gray-100 px-6 py-4">
+            <div className="flex gap-3">
+              <input
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                    e.preventDefault()
+                    handleAskAI(inputValue)
+                  }
+                }}
+                placeholder="회의 관련 질문, 중간 피드백 요청, 다음 액션 제안 등을 입력하세요."
+                className="flex-1 h-12 rounded-2xl border border-gray-200 px-4 text-sm"
+              />
+              <button
+                onClick={() => handleAskAI(inputValue)}
+                disabled={isChatLoading}
+                className="px-5 rounded-2xl bg-gray-900 text-white text-sm font-medium disabled:opacity-50"
+              >
+                전송
+              </button>
+            </div>
+          </div>
+        </main>
+
+        <aside className="bg-white rounded-3xl border border-gray-200 shadow-sm overflow-hidden flex flex-col min-w-0">
+          <div className="px-5 py-4 border-b border-gray-100">
+            <h2 className="text-lg font-semibold">회의 자료함</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              회의 중 녹음본과 회의 후 기록을 분리해서 보여줍니다.
+            </p>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-5 py-5 space-y-6">
+            <section>
+              <div className="flex items-center gap-2 mb-3">
+                <Mic className="w-4 h-4 text-violet-600" />
+                <h3 className="font-semibold">회의 중 녹음본</h3>
+              </div>
+
+              <div className="space-y-3">
+                {liveTranscriptItems.length === 0 ? (
+                  <div className="rounded-2xl bg-gray-50 border border-gray-200 px-4 py-4 text-sm text-gray-500">
+                    아직 실시간 기록이 없습니다.
+                  </div>
+                ) : (
+                  liveTranscriptItems.map((item) => (
+                    <div key={item.id} className="rounded-2xl bg-gray-50 border border-gray-200 px-4 py-4">
+                      <div className="text-xs text-violet-700 font-medium mb-1">{item.kindLabel}</div>
+                      <div className="text-sm text-gray-800 whitespace-pre-wrap leading-6">{item.previewLine}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section>
+              <div className="flex items-center gap-2 mb-3">
+                <FileText className="w-4 h-4 text-violet-600" />
+                <h3 className="font-semibold">회의 계획서</h3>
+              </div>
+
+              <div className="space-y-3">
+                {meetingPlanItems.length === 0 ? (
+                  <div className="rounded-2xl bg-gray-50 border border-gray-200 px-4 py-4 text-sm text-gray-500">
+                    저장된 계획서가 없습니다.
+                  </div>
+                ) : (
+                  meetingPlanItems.map((item) => (
+                    <div key={item.id} className="rounded-2xl bg-gray-50 border border-gray-200 px-4 py-4">
+                      <div className="text-xs text-violet-700 font-medium mb-1">{item.kindLabel}</div>
+                      <div className="text-sm text-gray-800">{item.name}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section>
+              <div className="flex items-center gap-2 mb-3">
+                <FileText className="w-4 h-4 text-violet-600" />
+                <h3 className="font-semibold">관련 자료</h3>
+              </div>
+
+              <div className="space-y-3">
+                {knowledgeItems.length === 0 ? (
+                  <div className="rounded-2xl bg-gray-50 border border-gray-200 px-4 py-4 text-sm text-gray-500">
+                    저장된 관련 자료가 없습니다.
+                  </div>
+                ) : (
+                  knowledgeItems.map((item) => (
+                    <div key={item.id} className="rounded-2xl bg-gray-50 border border-gray-200 px-4 py-4">
+                      <div className="text-xs text-violet-700 font-medium mb-1">{item.kindLabel}</div>
+                      <div className="text-sm text-gray-800">{item.name}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section>
+              <div className="flex items-center gap-2 mb-3">
+                <FileText className="w-4 h-4 text-violet-600" />
+                <h3 className="font-semibold">회의 후 녹음본</h3>
+              </div>
+
+              <div className="space-y-3">
+                {afterMeetingItems.length === 0 ? (
+                  <div className="rounded-2xl bg-gray-50 border border-gray-200 px-4 py-4 text-sm text-gray-500">
+                    회의가 종료되면 여기에 최종 기록이 정리됩니다.
+                  </div>
+                ) : (
+                  afterMeetingItems.map((item) => (
+                    <div key={item.id} className="rounded-2xl bg-gray-50 border border-gray-200 px-4 py-4">
+                      <div className="text-xs text-violet-700 font-medium mb-1">{item.kindLabel}</div>
+                      <div className="text-sm text-gray-800 whitespace-pre-wrap leading-6">{item.previewLine}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+        </aside>
       </div>
     </div>
-  );
+  )
 }

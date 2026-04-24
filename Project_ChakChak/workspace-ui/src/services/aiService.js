@@ -1,139 +1,203 @@
-// supabase import 제거
-// import { supabase } from './supabaseUse';
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
 
-const API_URL = "http://localhost:8000";
-const OLLAMA_URL = "http://localhost:11434/api/generate";
+export async function chatWithAI(
+  userText,
+  meetingText = '',
+  mode = 'general',
+  meta = {}
+) {
+  const response = await fetch(`${API_BASE_URL}/ai/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      text: userText,
+      meetingText,
+      mode,
+      meta,
+    }),
+  })
 
-// query_test.py 결과를 백엔드에서 받아오는 함수
-export const fetchQueryTestResult = async (sessionId = 1) => {
-  const res = await fetch(`${API_URL}/query-test?session_id=${sessionId}`);
-
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(errorText || "query_test 결과 조회 실패");
+  let data = null
+  try {
+    data = await response.json()
+  } catch {
+    data = null
   }
 
-  return await res.json();
-};
-// query_test.py 결과를 문자열로 변환
-export const buildTextFromAIInput = (aiInput) => {
-  if (!aiInput) return "";
-
-  const speechText = (aiInput.speeches || [])
-    .map(s => `[${s.start}~${s.end}] ${s.speaker}: ${s.text}`)
-    .join("\n");
-
-  const silenceText = (aiInput.silences || [])
-    .map(s => `[${s.start}~${s.end}] (${s.duration.toFixed(1)}s) ${s.state}`)
-    .join("\n");
-
-  return `
-[발화]
-${speechText}
-
-[침묵]
-${silenceText}
-`.trim();
-};
-// 기존 AI 채팅 함수
-export const chatWithAI = async (userMessage, meetingText = "") => {
-  try {
-    const systemPrompt = `너는 팀워크를 돕는 친절한 AI 비서야.
-다음에 제공되는 [회의록 내용]을 참고하여 사용자의 질문에 친절하게 답변해줘.
-꼭 회의록에 있는 내용만 답할 필요는 없고 사용자의 질문에 맞는 답을 너 방식대로 찾아줘.
-단, 너는 회의록을 항상 기억하고 있어야 돼.
-
-[회의록 내용]
-${meetingText ? meetingText : '회의록 내용이 없습니다.'}`;
-
-    const fullPrompt = `${systemPrompt}\n\n[사용자 질문]: ${userMessage}`;
-
-    const response = await fetch(OLLAMA_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gemma3:27b',    //모델 버전
-        prompt: fullPrompt,
-        stream: false
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`API 요청 실패: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return data.response;
-  } catch (err) {
-    console.error('AI 연결 중 오류 발생:', err);
-    return 'AI 연결에 실패했습니다';
+  if (!response.ok) {
+    throw new Error(data?.detail || 'AI 서버 연결 실패')
   }
-};
 
-
-// query_test.py 결과를 입력으로 받아 요약
-export const summarizeMeeting = async (sessionId = 1) => {
-  try {
-    // 1) 백엔드에서 query_test 결과 가져오기
-    const queryResult = await fetchQueryTestResult(sessionId);
-
-    // query_test.py 실행 텍스트
-    const meetingText = buildTextFromAIInput(queryResult.ai_input);
-
-    if (!meetingText.trim()) {
-      return {
-        overall: "회의 기록이 비어있습니다.",
-        todos: [],
-        analysis: []
-      };
-    }
-
-    // Ollama 프롬프트
-    const prompt = `
-[회의 내용]
-${meetingText}
-
-[지시 사항]
-위 대화 내용을 바탕으로 핵심 안건과 결정 사항을 요약해.
-
-반드시 아래의 JSON 형식을 지켜서 답변해줘. 설명이나 다른 말은 절대로 추가하지 마.
-{
-  "overall": "전체 회의의 핵심 내용을 1~2줄로 요약",
-  "todos": [
-    { "who": "이름", "task": "할 일", "deadline": "마감기한(없으면 '미정')" }
-  ],
-  "analysis": [
-    { "who": "이름", "key_point": "이 사람이 한 말 중 가장 중요한 내용" }
-  ]
+  return data?.text || '응답을 생성하지 못했습니다.'
 }
-`;
 
-    // Ollama 호출
-    const response = await fetch(OLLAMA_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'qwen2.5:3b',    //모델
-        prompt,
-        stream: false,
-        format: "json"
-      })
-    });
+export async function summarizeMeeting({
+  meetingType,
+  meetingTitle,
+  meetingTime,
+  keywords,
+  liveTranscriptText,
+  planSummaryText,
+  ragContextText,
+  sessionId,
+  useWeb = false,
+}) {
+  const prompt = `
+회의 종류: ${meetingType || '-'}
+회의 제목: ${meetingTitle || '-'}
+회의 시간: ${meetingTime || '-'}
+회의 키워드: ${keywords || '-'}
 
+계획서 요약:
+${planSummaryText || '(없음)'}
+
+RAG 참고 문맥:
+${ragContextText || '(없음)'}
+
+실시간 회의 기록:
+${liveTranscriptText || '(없음)'}
+
+위 내용을 바탕으로
+1) 지금까지 논의 핵심
+2) 결정된 것
+3) 남은 쟁점
+4) 다음 액션
+순으로 한국어로 정리해줘.
+`.trim()
+
+  return chatWithAI(prompt, liveTranscriptText, 'realtime', {
+    purpose: 'meeting_summary',
+    sessionId,
+    meetingType,
+    meetingTitle,
+    meetingTime,
+    keywords,
+    useWeb,
+  })
+}
+
+export async function generateMeetingFeedback({
+  meetingType,
+  meetingTitle,
+  keywords,
+  liveTranscriptText,
+  planSummaryText,
+  ragContextText,
+  sessionId,
+  useWeb = false,
+}) {
+  const prompt = `
+회의 종류: ${meetingType || '-'}
+회의 제목: ${meetingTitle || '-'}
+회의 키워드: ${keywords || '-'}
+
+계획서 요약:
+${planSummaryText || '(없음)'}
+
+RAG 참고 문맥:
+${ragContextText || '(없음)'}
+
+실시간 회의 기록:
+${liveTranscriptText || '(없음)'}
+
+위 내용을 바탕으로
+1) 현재 문제
+2) 이유
+3) 다음 질문/행동 제안
+형태로 한국어 피드백을 줘.
+`.trim()
+
+  return chatWithAI(prompt, liveTranscriptText, 'realtime', {
+    purpose: 'meeting_feedback',
+    sessionId,
+    meetingType,
+    meetingTitle,
+    keywords,
+    useWeb,
+  })
+}
+
+export async function fetchQueryTestResult(sessionId) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/query-test/${sessionId}`)
     if (!response.ok) {
-      throw new Error(`AI 서버 통신 오류 (${response.status}): Ollama 서버가 켜져 있는지 확인해주세요.`);
+      return {
+        sessionId,
+        summary: '',
+        transcript: '',
+        silenceEvents: [],
+        nodes: [],
+      }
     }
-
-    const data = await response.json();
-
-    if (!data || !data.response || data.response.trim() === '') {
-      throw new Error("AI가 빈 응답을 반환했습니다.");
-    }
-
-    return JSON.parse(data.response);
-
+    return await response.json()
   } catch (error) {
-    console.error('Error generating summary:', error);
-    throw error;
+    console.error('fetchQueryTestResult fallback:', error)
+    return {
+      sessionId,
+      summary: '',
+      transcript: '',
+      silenceEvents: [],
+      nodes: [],
+    }
   }
-};
+}
+
+export function buildTextFromAIInput(input) {
+  if (!input) return ''
+
+  if (typeof input === 'string') return input
+
+  if (Array.isArray(input)) {
+    return input
+      .map((item) => buildTextFromAIInput(item))
+      .filter(Boolean)
+      .join('\n')
+  }
+
+  if (typeof input === 'object') {
+    const priorityKeys = [
+      'summary',
+      'transcript',
+      'text',
+      'content',
+      'previewLine',
+      'message',
+      'feedback',
+      'ragContext',
+      'webContext',
+    ]
+
+    const collected = []
+
+    for (const key of priorityKeys) {
+      if (input[key]) {
+        collected.push(String(input[key]))
+      }
+    }
+
+    if (Array.isArray(input.silenceEvents)) {
+      input.silenceEvents.forEach((event) => {
+        collected.push(
+          `[silence] ${event.state || 'pause'} ${event.start_sec ?? ''}~${event.end_sec ?? ''}`
+        )
+      })
+    }
+
+    if (Array.isArray(input.nodes)) {
+      input.nodes.forEach((node) => {
+        if (node?.label) collected.push(node.label)
+      })
+    }
+
+    if (collected.length > 0) {
+      return collected.join('\n')
+    }
+
+    return JSON.stringify(input, null, 2)
+  }
+
+  return String(input)
+}
