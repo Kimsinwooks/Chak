@@ -11,6 +11,7 @@ import MeetingLiveView from './components/MeetingLiveView'
 import STTWorkspace from './components/STTWorkspace'
 import CalendarView from './components/CalendarView'
 import Mindmap from './components/Mindmap'
+import MeetingReportView from './components/MeetingReportView'
 
 export default function App() {
   const userList = ['User', '신우', '종범', '혜은', '민수', '지희', '영수']
@@ -26,6 +27,7 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
 
   const [activeMeetingPlan, setActiveMeetingPlan] = useState(null)
+  const [reportSessionId, setReportSessionId] = useState(null)
   const [useWebSearch, setUseWebSearch] = useState(false)
 
   const [aiChatMessages, setAiChatMessages] = useState([
@@ -66,6 +68,15 @@ export default function App() {
 
   const handleSelectMeetingArchive = () => {
     setActiveView('meeting_archive')
+  }
+
+  const handleSelectMeetingReport = () => {
+    setActiveView('meeting_report')
+  }
+
+  const handleOpenMeetingReport = (sessionId) => {
+    setReportSessionId(sessionId)
+    setActiveView('meeting_report')
   }
 
   const handleStartMeeting = (planDataWithSession) => {
@@ -193,7 +204,11 @@ export default function App() {
     }
 
     if (activeView === 'meeting_archive') {
-      return <STTWorkspace />
+      return <STTWorkspace onOpenMeetingReport={handleOpenMeetingReport} />
+    }
+
+    if (activeView === 'meeting_report') {
+      return <MeetingReportView sessionId={reportSessionId || activeMeetingPlan?.sessionId} />
     }
 
     return (
@@ -227,6 +242,7 @@ export default function App() {
         onSelectMindmap={handleSelectMindmap}
         onSelectMeetingPrep={handleSelectMeetingPrep}
         onSelectMeetingArchive={handleSelectMeetingArchive}
+        onSelectMeetingReport={handleSelectMeetingReport}
       />
 
       <div className="flex-1 flex overflow-hidden relative bg-white">

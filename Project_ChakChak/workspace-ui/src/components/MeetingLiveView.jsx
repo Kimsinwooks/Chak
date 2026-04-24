@@ -20,6 +20,7 @@ import {
   uploadRealtimeChunk,
 } from '../services/realtimeMeetingService'
 import { chatWithAI } from '../services/aiService'
+import { logMeetingAIEvent } from '../services/meetingReportService'
 
 function MeetingTypeLabel({ meetingType }) {
   const labels = {
@@ -246,7 +247,10 @@ export default function MeetingLiveView({ planData }) {
   const handleAskAI = async (text) => {
     if (!text.trim()) return
 
-    setMessages((prev) => [...prev, { sender: 'user', text }])
+    const askedAtSec = elapsedSeconds
+    const questionText = text.trim()
+
+    setMessages((prev) => [...prev, { sender: 'user', text: questionText }])
     setInputValue('')
     setIsChatLoading(true)
 
@@ -256,7 +260,7 @@ export default function MeetingLiveView({ planData }) {
         .join('\n')
 
       const response = await chatWithAI(
-        text,
+        questionText,
         historyText,
         'realtime',
         {
@@ -271,6 +275,19 @@ export default function MeetingLiveView({ planData }) {
       )
 
       setMessages((prev) => [...prev, { sender: 'ai', text: response }])
+
+      try {
+        await logMeetingAIEvent({
+          sessionId,
+          question: questionText,
+          answer: response,
+          askedAtSec,
+          beforeContext: historyText,
+          afterContext: '',
+        })
+      } catch (logError) {
+        console.warn('AI event log failed:', logError)
+      }
     } catch (error) {
       console.error(error)
       setMessages((prev) => [

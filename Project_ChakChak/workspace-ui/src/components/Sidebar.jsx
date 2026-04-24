@@ -12,6 +12,7 @@ import {
   ClipboardList,
   Mic,
   Network,
+  BarChart3,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -23,6 +24,7 @@ export default function Sidebar({
   onSelectNote,
   onSelectMeetingPrep,
   onSelectMeetingArchive,
+  onSelectMeetingReport,
   onSelectCalendar,
   onSelectMindmap,
 }) {
@@ -141,6 +143,15 @@ export default function Sidebar({
             >
               <Network className="w-4 h-4 shrink-0" />
               {isOpen && <span className="ml-2">마인드맵</span>}
+            </button>
+
+            <button
+              onClick={() => onSelectMeetingReport?.()}
+              title="회의 분석"
+              className={navButtonClass(activeView === 'meeting_report')}
+            >
+              <BarChart3 className="w-4 h-4 shrink-0" />
+              {isOpen && <span className="ml-2">회의 분석</span>}
             </button>
           </div>
         </div>

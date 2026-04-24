@@ -13,6 +13,7 @@ dist/
 .vite/
 
 *.sqlite3
+*.db
 backend/data/
 backend/uploads/
 backend/__pycache__/
