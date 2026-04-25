@@ -1229,3 +1229,514 @@ def get_feedback(session_id: str):
     )
 
     return {"feedback": feedback, "ragContext": rag_text}
+
+# ============================================================
+# Stable realtime meeting API override
+# - Fixes realtime-chunk 500
+# - Fixes stop 500
+# - Fixes mid-summary/feedback failure path
+# ============================================================
+
+from fastapi import Form
+import uuid as _uuid
+from pathlib import Path as _Path
+from datetime import datetime as _datetime
+import sqlite3 as _sqlite3
+import subprocess as _subprocess
+import os as _os
+import tempfile as _tempfile
+
+_RUNTIME_BASE_DIR = _Path(__file__).resolve().parent
+_RUNTIME_DATA_DIR = _RUNTIME_BASE_DIR / "data"
+_RUNTIME_DB_PATH = _RUNTIME_DATA_DIR / "meeting_app.sqlite3"
+
+
+def _runtime_conn():
+    _RUNTIME_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = _sqlite3.connect(_RUNTIME_DB_PATH)
+    conn.row_factory = _sqlite3.Row
+    return conn
+
+
+def _runtime_ensure_tables():
+    conn = _runtime_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS meeting_sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        meeting_time TEXT,
+        keywords TEXT,
+        meeting_type TEXT,
+        realtime_recording_enabled INTEGER DEFAULT 1,
+        created_at TEXT NOT NULL,
+        stopped_at TEXT,
+        status TEXT DEFAULT 'live'
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS library_items (
+        id TEXT PRIMARY KEY,
+        session_id TEXT,
+        scope TEXT NOT NULL,
+        bucket TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        text_content TEXT,
+        preview_line TEXT,
+        created_at TEXT NOT NULL
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def _runtime_get_session(session_id: str):
+    _runtime_ensure_tables()
+    conn = _runtime_conn()
+    row = conn.execute(
+        "SELECT * FROM meeting_sessions WHERE id = ?",
+        (session_id,),
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def _runtime_insert_library_item(
+    session_id: str,
+    bucket: str,
+    kind: str,
+    name: str,
+    file_path: str,
+    text_content: str,
+):
+    _runtime_ensure_tables()
+    item_id = str(_uuid.uuid4())
+    preview = ""
+    if text_content:
+        preview = text_content.splitlines()[0][:220]
+
+    conn = _runtime_conn()
+    conn.execute("""
+        INSERT INTO library_items
+        (id, session_id, scope, bucket, kind, name, file_path, text_content, preview_line, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        item_id,
+        session_id,
+        "session",
+        bucket,
+        kind,
+        name,
+        file_path,
+        text_content or "",
+        preview,
+        _datetime.now().isoformat(),
+    ))
+    conn.commit()
+    conn.close()
+
+    return {
+        "id": item_id,
+        "sessionId": session_id,
+        "bucket": bucket,
+        "kind": kind,
+        "name": name,
+        "filePath": file_path,
+        "textContent": text_content or "",
+        "previewLine": preview,
+    }
+
+
+def _runtime_read_session_transcript(session_id: str) -> str:
+    _runtime_ensure_tables()
+    conn = _runtime_conn()
+    rows = conn.execute("""
+        SELECT text_content, preview_line
+        FROM library_items
+        WHERE session_id = ?
+          AND bucket IN ('live_recordings', 'post_meeting_recordings')
+        ORDER BY created_at ASC
+    """, (session_id,)).fetchall()
+    conn.close()
+
+    texts = []
+    for row in rows:
+        t = row["text_content"] or row["preview_line"] or ""
+        if t.strip():
+            texts.append(t.strip())
+    return "\n".join(texts)
+
+
+def _runtime_format_sec(sec: float) -> str:
+    sec = max(0, int(sec))
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    s = sec % 60
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+def _runtime_ffmpeg_to_wav(src: str, dst: str):
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        src,
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-vn",
+        dst,
+    ]
+    result = _subprocess.run(
+        cmd,
+        stdout=_subprocess.PIPE,
+        stderr=_subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr[-1200:])
+
+
+def _runtime_transcribe_chunk(file_path: str, offset_sec: float = 0.0) -> str:
+    """
+    실시간 chunk용 STT.
+    기존 transcribe_audio_file이 segments 형식/시그니처 문제를 내도 여기서 안전하게 처리.
+    """
+    # 1순위: 기존 프로젝트 함수가 있으면 사용
+    try:
+        try:
+            return transcribe_audio_file(file_path, offset_sec=offset_sec)
+        except TypeError:
+            raw = transcribe_audio_file(file_path)
+            # 기존 함수가 이미 timestamp를 만들었다면 그대로 반환
+            if raw and "[" in raw and "~" in raw:
+                return raw
+            return f"[{_runtime_format_sec(offset_sec)}~{_runtime_format_sec(offset_sec + 5)}] 익명1: {raw or ''}"
+    except Exception:
+        pass
+
+    # 2순위: faster-whisper 직접 사용
+    wav_path = None
+    try:
+        with _tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            wav_path = tmp.name
+
+        _runtime_ffmpeg_to_wav(file_path, wav_path)
+
+        model = get_whisper_model()
+        segments, _ = model.transcribe(
+            wav_path,
+            language="ko",
+            vad_filter=True,
+            beam_size=1,
+            temperature=0.0,
+            condition_on_previous_text=False,
+        )
+
+        lines = []
+        for seg in segments:
+            text = (getattr(seg, "text", "") or "").strip()
+            if not text:
+                continue
+
+            start = float(offset_sec) + float(getattr(seg, "start", 0.0))
+            end = float(offset_sec) + float(getattr(seg, "end", 0.0))
+            if end <= start:
+                end = start + 1
+
+            lines.append(
+                f"[{_runtime_format_sec(start)}~{_runtime_format_sec(end)}] 익명1: {text}"
+            )
+
+        if lines:
+            return "\n".join(lines)
+
+        return f"[{_runtime_format_sec(offset_sec)}~{_runtime_format_sec(offset_sec + 1)}] 시스템: 음성 감지 없음"
+
+    finally:
+        if wav_path:
+            try:
+                _os.remove(wav_path)
+            except Exception:
+                pass
+
+
+def _runtime_call_ai(system_prompt: str, user_prompt: str, model: str = None) -> str:
+    model = model or globals().get("REALTIME_SLM_MODEL", "qwen2.5:3b")
+
+    try:
+        return call_ollama_chat(model, system_prompt, user_prompt)
+    except TypeError:
+        try:
+            return call_ollama_chat({
+                "model": model,
+                "systemPrompt": system_prompt,
+                "userPrompt": user_prompt,
+            })
+        except Exception as e:
+            raise RuntimeError(str(e))
+    except Exception as e:
+        raise RuntimeError(str(e))
+
+
+def _runtime_remove_routes(paths: list[str]):
+    remove_set = set(paths)
+    app.router.routes = [
+        r for r in app.router.routes
+        if getattr(r, "path", None) not in remove_set
+    ]
+
+
+_runtime_remove_routes([
+    "/meeting/session/{session_id}/realtime-chunk",
+    "/meeting/session/{session_id}/stop",
+    "/meeting/session/{session_id}/mid-summary",
+    "/meeting/session/{session_id}/feedback",
+])
+
+
+@app.post("/meeting/session/{session_id}/realtime-chunk")
+async def stable_upload_realtime_chunk(
+    session_id: str,
+    file: UploadFile = File(...),
+    offset_sec: float = Form(0),
+):
+    session = _runtime_get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="회의 세션을 찾을 수 없습니다.")
+
+    session_dir = _RUNTIME_DATA_DIR / "sessions" / session_id / "live_recordings"
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = f"chunk_{int(float(offset_sec) * 1000)}_{file.filename or 'audio.webm'}"
+    raw_path = session_dir / safe_name
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="빈 audio chunk입니다.")
+
+    raw_path.write_bytes(content)
+
+    try:
+        transcript = _runtime_transcribe_chunk(str(raw_path), offset_sec=offset_sec)
+    except Exception as e:
+        err = str(e)
+        # MediaRecorder webm 조각이 너무 짧거나 헤더가 불완전하면 ffmpeg가 실패할 수 있음.
+        # 이 경우 회의 전체를 깨지 말고 해당 chunk만 skip 처리.
+        if (
+            "EBML header parsing failed" in err
+            or "Invalid data found when processing input" in err
+            or "Error opening input" in err
+            or raw_path.stat().st_size < 2048
+        ):
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "invalid_or_too_short_audio_chunk",
+                "detail": err[-500:],
+                "sessionId": session_id,
+                "offsetSec": offset_sec,
+                "transcript": "",
+            }
+
+        raise HTTPException(status_code=500, detail=f"실시간 STT 변환 실패: {err}")
+
+    item = _runtime_insert_library_item(
+        session_id=session_id,
+        bucket="live_recordings",
+        kind="realtime_audio_chunk_transcript",
+        name=safe_name,
+        file_path=str(raw_path),
+        text_content=transcript,
+    )
+
+    return {
+        "ok": True,
+        "sessionId": session_id,
+        "offsetSec": offset_sec,
+        "transcript": transcript,
+        "item": item,
+    }
+
+
+@app.post("/meeting/session/{session_id}/mid-summary")
+def stable_mid_summary(session_id: str):
+    session = _runtime_get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="회의 세션을 찾을 수 없습니다.")
+
+    transcript = _runtime_read_session_transcript(session_id)
+
+    if not transcript.strip():
+        return {
+            "summary": "아직 누적된 STT 기록이 없습니다.",
+            "sessionId": session_id,
+        }
+
+    system_prompt = """
+너는 실시간 회의 중간 요약 AI다.
+반드시 한국어로 간결하게 답한다.
+회의 transcript에 근거해서만 요약한다.
+없는 사실은 만들지 않는다.
+출력 형식:
+1. 지금까지 논의 핵심
+2. 결정된 내용
+3. 남은 쟁점
+4. 다음 액션
+""".strip()
+
+    user_prompt = f"""
+[회의 제목]
+{session["title"]}
+
+[회의 종류]
+{session["meeting_type"]}
+
+[키워드]
+{session["keywords"]}
+
+[누적 STT]
+{transcript[-12000:]}
+""".strip()
+
+    try:
+        summary = _runtime_call_ai(system_prompt, user_prompt)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"중간 요약 생성 실패: {str(e)}")
+
+    return {
+        "summary": summary,
+        "sessionId": session_id,
+    }
+
+
+@app.post("/meeting/session/{session_id}/feedback")
+def stable_feedback(session_id: str):
+    session = _runtime_get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="회의 세션을 찾을 수 없습니다.")
+
+    transcript = _runtime_read_session_transcript(session_id)
+
+    if not transcript.strip():
+        return {
+            "feedback": "아직 누적된 STT 기록이 없어 피드백을 생성할 수 없습니다.",
+            "sessionId": session_id,
+        }
+
+    system_prompt = """
+너는 회의 진행 피드백 AI다.
+회의가 목표에서 벗어났는지, 반복되는 논점이 있는지, 누락된 관점이 있는지 판단한다.
+반드시 한국어로 답한다.
+출력 형식:
+1. 현재 문제
+2. 이유
+3. 바로 던질 질문
+4. 다음 행동
+""".strip()
+
+    user_prompt = f"""
+[회의 제목]
+{session["title"]}
+
+[회의 종류]
+{session["meeting_type"]}
+
+[키워드]
+{session["keywords"]}
+
+[누적 STT]
+{transcript[-12000:]}
+""".strip()
+
+    try:
+        feedback = _runtime_call_ai(system_prompt, user_prompt)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"회의 피드백 생성 실패: {str(e)}")
+
+    return {
+        "feedback": feedback,
+        "sessionId": session_id,
+    }
+
+
+@app.post("/meeting/session/{session_id}/stop")
+def stable_stop_realtime_meeting(session_id: str):
+    session = _runtime_get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="회의 세션을 찾을 수 없습니다.")
+
+    transcript = _runtime_read_session_transcript(session_id)
+    now = _datetime.now().isoformat()
+
+    conn = _runtime_conn()
+    conn.execute(
+        "UPDATE meeting_sessions SET status = ?, stopped_at = ? WHERE id = ?",
+        ("stopped", now, session_id),
+    )
+    conn.commit()
+    conn.close()
+
+    final_summary = ""
+    if transcript.strip():
+        system_prompt = """
+너는 회의 종료 후 최종 회의록을 작성하는 AI다.
+반드시 한국어로 작성한다.
+없는 사실은 만들지 말고 STT 기록에 근거한다.
+출력 형식:
+# 최종 회의록
+## 핵심 요약
+## 결정 사항
+## 미해결 쟁점
+## 다음 액션
+""".strip()
+
+        user_prompt = f"""
+[회의 제목]
+{session["title"]}
+
+[회의 종류]
+{session["meeting_type"]}
+
+[키워드]
+{session["keywords"]}
+
+[전체 STT]
+{transcript[-20000:]}
+""".strip()
+
+        try:
+            final_summary = _runtime_call_ai(system_prompt, user_prompt)
+        except Exception as e:
+            final_summary = f"최종 요약 생성 실패: {str(e)}"
+    else:
+        final_summary = "저장된 STT 기록이 없습니다."
+
+    summary_dir = _RUNTIME_DATA_DIR / "sessions" / session_id / "post_meeting_recordings"
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = summary_dir / "final_summary.md"
+    summary_path.write_text(final_summary, encoding="utf-8")
+
+    _runtime_insert_library_item(
+        session_id=session_id,
+        bucket="post_meeting_recordings",
+        kind="final_meeting_summary",
+        name="final_summary.md",
+        file_path=str(summary_path),
+        text_content=final_summary,
+    )
+
+    return {
+        "ok": True,
+        "sessionId": session_id,
+        "status": "stopped",
+        "finalSummary": final_summary,
+    }

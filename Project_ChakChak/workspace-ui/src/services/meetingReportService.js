@@ -54,6 +54,28 @@ export async function regenerateMeetingReport(sessionId) {
   return data
 }
 
+export async function getMeetingTranscript(sessionId) {
+  const response = await fetch(`${API_BASE_URL}/meeting-report/${sessionId}/transcript`)
+  const data = await parseJsonSafe(response)
+
+  if (!response.ok) {
+    throw new Error(data?.detail || 'STT transcript를 불러오지 못했습니다.')
+  }
+
+  return data
+}
+
+export async function getMeetingReportItems(sessionId) {
+  const response = await fetch(`${API_BASE_URL}/meeting-report/${sessionId}/items`)
+  const data = await parseJsonSafe(response)
+
+  if (!response.ok) {
+    throw new Error(data?.detail || '회의 저장 항목을 불러오지 못했습니다.')
+  }
+
+  return data
+}
+
 export async function logMeetingAIEvent({
   sessionId,
   question,

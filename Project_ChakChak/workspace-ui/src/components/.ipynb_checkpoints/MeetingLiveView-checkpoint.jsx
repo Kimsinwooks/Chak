@@ -176,7 +176,7 @@ export default function MeetingLiveView({ planData }) {
         chunkOffsetRef.current = 0
 
         recorder.ondataavailable = async (event) => {
-          if (!event.data || event.data.size < 4096) return
+          if (!event.data || event.data.size === 0) return
           try {
             await uploadRealtimeChunk(sessionId, event.data, chunkOffsetRef.current)
             chunkOffsetRef.current += 5

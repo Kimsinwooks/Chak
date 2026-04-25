@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from 'react'
-import { FileAudio, FileText, FolderOpen, Upload, BarChart3 } from 'lucide-react'
+import { BarChart3, Eye, FileAudio, FileText, FolderOpen, Upload } from 'lucide-react'
 import {
   getGlobalLibraryTree,
   uploadGlobalKnowledgeFile,
 } from '../services/realtimeMeetingService'
-import { uploadAudioForMeetingReport } from '../services/meetingReportService'
+import {
+  getMeetingTranscript,
+  uploadAudioForMeetingReport,
+} from '../services/meetingReportService'
 
 export default function STTWorkspace({ onOpenMeetingReport }) {
   const [tree, setTree] = useState(null)
@@ -15,6 +18,8 @@ export default function STTWorkspace({ onOpenMeetingReport }) {
   const [isUploadingKnowledge, setIsUploadingKnowledge] = useState(false)
   const [isUploadingAudio, setIsUploadingAudio] = useState(false)
   const [message, setMessage] = useState('')
+  const [recentSessions, setRecentSessions] = useState([])
+  const [selectedTranscript, setSelectedTranscript] = useState(null)
 
   const refreshTree = async () => {
     try {
@@ -59,13 +64,23 @@ export default function STTWorkspace({ onOpenMeetingReport }) {
     }
 
     setIsUploadingAudio(true)
-    setMessage('STT 변환 중입니다. 파일 길이에 따라 시간이 걸릴 수 있습니다.')
+    setSelectedTranscript(null)
+    setMessage(`STT 변환 및 SLM 회의 분석 중입니다. 선택 모델: ${sttModel}`)
 
     try {
       const result = await uploadAudioForMeetingReport(audioFile, { sttModel, language })
       setAudioFile(null)
-      setMessage(`음성 STT 변환 완료. sessionId=${result.sessionId}`)
+      setMessage(`완료. sessionId=${result.sessionId}`)
 
+      const newSession = {
+        id: result.sessionId,
+        title: result.filename,
+        sttModel: result.sttModel,
+        language: result.language,
+        transcriptPreview: result.transcriptPreview,
+      }
+
+      setRecentSessions((prev) => [newSession, ...prev])
       await refreshTree()
 
       if (onOpenMeetingReport) {
@@ -76,6 +91,16 @@ export default function STTWorkspace({ onOpenMeetingReport }) {
       setMessage(error.message || '음성파일 업로드/STT 변환 실패')
     } finally {
       setIsUploadingAudio(false)
+    }
+  }
+
+  const handleViewTranscript = async (sessionId) => {
+    try {
+      const data = await getMeetingTranscript(sessionId)
+      setSelectedTranscript(data)
+    } catch (error) {
+      console.error(error)
+      setMessage(error.message || 'STT transcript 로딩 실패')
     }
   }
 
@@ -133,7 +158,7 @@ export default function STTWorkspace({ onOpenMeetingReport }) {
               <div>
                 <h2 className="text-lg font-bold text-gray-900">회의 후 녹음파일 업로드</h2>
                 <p className="text-sm text-gray-500">
-                  마이크 없이 이미 녹음된 파일을 올려 STT, 회의록, Progress Bar를 생성합니다.
+                  이미 녹음된 파일을 올려 STT, 회의록, Progress Bar를 생성합니다.
                 </p>
               </div>
             </div>
@@ -145,6 +170,7 @@ export default function STTWorkspace({ onOpenMeetingReport }) {
                 onChange={(e) => setAudioFile(e.target.files?.[0] || null)}
                 className="block w-full text-sm"
               />
+
               <div className="text-sm text-gray-700">
                 {audioFile ? audioFile.name : '선택된 음성파일 없음'}
               </div>
@@ -178,6 +204,7 @@ export default function STTWorkspace({ onOpenMeetingReport }) {
                   </select>
                 </label>
               </div>
+
               <button
                 onClick={handleAudioUpload}
                 disabled={isUploadingAudio}
@@ -190,32 +217,87 @@ export default function STTWorkspace({ onOpenMeetingReport }) {
           </div>
         </section>
 
+        {recentSessions.length > 0 && (
+          <section className="mt-8 rounded-3xl bg-white border border-gray-200 shadow-sm p-6">
+            <h2 className="text-lg font-bold text-gray-900 mb-4">방금 변환한 회의 STT</h2>
+            <div className="space-y-3">
+              {recentSessions.map((session) => (
+                <div key={session.id} className="rounded-2xl bg-gray-50 border border-gray-100 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="font-semibold text-gray-900">{session.title}</div>
+                      <div className="text-xs text-gray-500 mt-1">
+                        sessionId={session.id} · STT={session.sttModel} · language={session.language || 'auto'}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleViewTranscript(session.id)}
+                        className="px-3 py-2 rounded-xl bg-white border border-gray-200 text-sm inline-flex items-center gap-2"
+                      >
+                        <Eye className="w-4 h-4" />
+                        STT 보기
+                      </button>
+                      <button
+                        onClick={() => onOpenMeetingReport?.(session.id)}
+                        className="px-3 py-2 rounded-xl bg-blue-600 text-white text-sm inline-flex items-center gap-2"
+                      >
+                        <BarChart3 className="w-4 h-4" />
+                        분석 보기
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-3 text-sm text-gray-600 line-clamp-3">
+                    {session.transcriptPreview}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {selectedTranscript && (
+          <section className="mt-8 rounded-3xl bg-white border border-gray-200 shadow-sm p-6">
+            <h2 className="text-lg font-bold text-gray-900">STT 변환 결과</h2>
+            <p className="text-sm text-orange-600 mt-2">
+              {selectedTranscript.diarizationNote}
+            </p>
+            <div className="mt-4 max-h-[420px] overflow-y-auto rounded-2xl bg-gray-50 border border-gray-200 p-4">
+              {selectedTranscript.transcriptLines?.map((line, idx) => (
+                <div key={idx} className="py-2 border-b border-gray-100 last:border-0">
+                  <span className="text-xs font-bold text-violet-600">
+                    [{line.start}~{line.end}]
+                  </span>
+                  <span className="ml-2 text-xs font-semibold text-gray-500">
+                    {line.speaker}
+                  </span>
+                  <span className="ml-2 text-sm text-gray-800">
+                    {line.text}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         <section className="mt-8 grid grid-cols-3 gap-6">
-          <div className="rounded-3xl bg-white border border-gray-200 shadow-sm p-6">
-            <div className="flex items-center gap-2 mb-4">
-              <FolderOpen className="w-5 h-5 text-violet-600" />
-              <h2 className="text-lg font-bold text-gray-900">회의 중 녹음본</h2>
-            </div>
-            <List items={tree?.realtimeMeetings || []} empty="표시할 회의 중 녹음본이 없습니다." />
-          </div>
-
-          <div className="rounded-3xl bg-white border border-gray-200 shadow-sm p-6">
-            <div className="flex items-center gap-2 mb-4">
-              <FileAudio className="w-5 h-5 text-blue-600" />
-              <h2 className="text-lg font-bold text-gray-900">회의 후 녹음본</h2>
-            </div>
-            <List items={tree?.postMeetingRecordings || []} empty="표시할 회의 후 녹음본이 없습니다." />
-          </div>
-
-          <div className="rounded-3xl bg-white border border-gray-200 shadow-sm p-6">
-            <div className="flex items-center gap-2 mb-4">
-              <FileText className="w-5 h-5 text-violet-600" />
-              <h2 className="text-lg font-bold text-gray-900">업로드 문서</h2>
-            </div>
-            <List items={tree?.uploadedKnowledge || []} empty="표시할 업로드 문서가 없습니다." />
-          </div>
+          <Panel title="회의 중 녹음본" icon={<FolderOpen className="w-5 h-5 text-violet-600" />} items={tree?.realtimeMeetings || []} empty="표시할 회의 중 녹음본이 없습니다." />
+          <Panel title="회의 후 녹음본" icon={<FileAudio className="w-5 h-5 text-blue-600" />} items={tree?.postMeetingRecordings || []} empty="표시할 회의 후 녹음본이 없습니다." />
+          <Panel title="업로드 문서" icon={<FileText className="w-5 h-5 text-violet-600" />} items={tree?.uploadedKnowledge || []} empty="표시할 업로드 문서가 없습니다." />
         </section>
       </div>
+    </div>
+  )
+}
+
+function Panel({ title, icon, items, empty }) {
+  return (
+    <div className="rounded-3xl bg-white border border-gray-200 shadow-sm p-6">
+      <div className="flex items-center gap-2 mb-4">
+        {icon}
+        <h2 className="text-lg font-bold text-gray-900">{title}</h2>
+      </div>
+      <List items={items} empty={empty} />
     </div>
   )
 }
